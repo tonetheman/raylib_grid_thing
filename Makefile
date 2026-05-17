@@ -17,6 +17,10 @@ ifeq ($(UNAME), Darwin)
 
     PLATFORM_LIBS = -framework CoreVideo -framework IOKit -framework Cocoa \
                     -framework GLUT -framework OpenGL
+
+    # Static versions of the non-system libs for distribution
+    RAYLIB_STATIC := $(BREW)/lib/libraylib.a
+    LUA_STATIC    := $(BREW)/lib/liblua.a
 else
     RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib)
     RAYLIB_LIBS   := $(shell pkg-config --libs   raylib)
@@ -28,10 +32,23 @@ endif
 CFLAGS = -O2 -Wall -Wextra $(RAYLIB_CFLAGS) $(LUA_CFLAGS)
 LIBS   = $(RAYLIB_LIBS) $(LUA_LIBS) $(PLATFORM_LIBS) -lpthread
 
+# Development build (links against dylibs — fast, requires homebrew)
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
-clean:
-	rm -f $(TARGET)
+# Distributable build — statically links raylib + lua, no homebrew needed on target Mac
+dist: $(SRC)
+ifeq ($(UNAME), Darwin)
+	$(CC) $(CFLAGS) -o $(TARGET)_dist $< \
+	    $(RAYLIB_STATIC) $(LUA_STATIC) \
+	    $(PLATFORM_LIBS) -lpthread
+	@echo "Built $(TARGET)_dist — send this file to your friend"
+	@echo "They need macOS (no other dependencies)"
+else
+	@echo "Static dist build not configured for this platform"
+endif
 
-.PHONY: clean
+clean:
+	rm -f $(TARGET) $(TARGET)_dist
+
+.PHONY: clean dist
