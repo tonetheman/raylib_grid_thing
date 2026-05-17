@@ -16,6 +16,11 @@ static int   grid[GRID_SIZE][GRID_SIZE][GRID_SIZE];
 static Color colors[GRID_SIZE][GRID_SIZE][GRID_SIZE];
 static bool  show_wires = true;
 
+// Separate grid for the target shape (loaded from target*.lua, never written by player)
+static int   target_grid[GRID_SIZE][GRID_SIZE][GRID_SIZE];
+static Color target_colors[GRID_SIZE][GRID_SIZE][GRID_SIZE];
+static char  target_filename[512] = "target1.lua";
+
 // ---------------------------------------------------------------------------
 // Thread-safe command queue (stdin -> main loop)
 // ---------------------------------------------------------------------------
@@ -129,6 +134,35 @@ static void draw_grid(void) {
                     z * CUBE_SPACING - offset,
                 };
                 DrawCube(pos, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE, colors[x][y][z]);
+                if (show_wires)
+                    DrawCubeWires(pos, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
+                                  (Color){0, 0, 0, 180});
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Target grid drawing
+// ---------------------------------------------------------------------------
+static void draw_target_grid(void) {
+    float offset = (GRID_SIZE - 1) * CUBE_SPACING * 0.5f;
+    for (int x = 0; x < GRID_SIZE; x++) {
+        for (int y = 0; y < GRID_SIZE; y++) {
+            for (int z = 0; z < GRID_SIZE; z++) {
+                if (!target_grid[x][y][z]) continue;
+                if (x > 0 && x < GRID_SIZE-1 &&
+                    y > 0 && y < GRID_SIZE-1 &&
+                    z > 0 && z < GRID_SIZE-1 &&
+                    target_grid[x-1][y][z] && target_grid[x+1][y][z] &&
+                    target_grid[x][y-1][z] && target_grid[x][y+1][z] &&
+                    target_grid[x][y][z-1] && target_grid[x][y][z+1]) continue;
+                Vector3 pos = {
+                    x * CUBE_SPACING - offset,
+                    y * CUBE_SPACING - offset,
+                    z * CUBE_SPACING - offset,
+                };
+                DrawCube(pos, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE, target_colors[x][y][z]);
                 if (show_wires)
                     DrawCubeWires(pos, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
                                   (Color){0, 0, 0, 180});
@@ -284,6 +318,90 @@ static int l_stop(lua_State *L) {
 }
 
 // ---------------------------------------------------------------------------
+// Target Lua API — same surface as player API but writes to target_grid/colors
+// ---------------------------------------------------------------------------
+static int lt_set_cube(lua_State *L) {
+    int x=(int)luaL_checkinteger(L,1), y=(int)luaL_checkinteger(L,2), z=(int)luaL_checkinteger(L,3);
+    int s=lua_toboolean(L,4);
+    if (x>=0&&x<GRID_SIZE&&y>=0&&y<GRID_SIZE&&z>=0&&z<GRID_SIZE) target_grid[x][y][z]=s;
+    return 0;
+}
+static int lt_clear(lua_State *L) {
+    (void)L; memset(target_grid,0,sizeof target_grid); return 0;
+}
+static int lt_fill(lua_State *L) {
+    (void)L;
+    for(int x=0;x<GRID_SIZE;x++) for(int y=0;y<GRID_SIZE;y++) for(int z=0;z<GRID_SIZE;z++) target_grid[x][y][z]=1;
+    return 0;
+}
+static int lt_set_layer(lua_State *L) {
+    const char *axis=luaL_checkstring(L,1); int idx=(int)luaL_checkinteger(L,2); int s=lua_toboolean(L,3);
+    if(idx<0||idx>=GRID_SIZE) return 0;
+    for(int a=0;a<GRID_SIZE;a++) for(int b=0;b<GRID_SIZE;b++) {
+        switch(axis[0]) {
+            case 'x': target_grid[idx][a][b]=s; break;
+            case 'y': target_grid[a][idx][b]=s; break;
+            case 'z': target_grid[a][b][idx]=s; break;
+        }
+    }
+    return 0;
+}
+static int lt_set_color(lua_State *L) {
+    int x=(int)luaL_checkinteger(L,1),y=(int)luaL_checkinteger(L,2),z=(int)luaL_checkinteger(L,3);
+    int r=(int)luaL_checknumber(L,4),g=(int)luaL_checknumber(L,5),b=(int)luaL_checknumber(L,6);
+    if(x>=0&&x<GRID_SIZE&&y>=0&&y<GRID_SIZE&&z>=0&&z<GRID_SIZE)
+        target_colors[x][y][z]=(Color){(unsigned char)Clamp((float)r,0,255),(unsigned char)Clamp((float)g,0,255),(unsigned char)Clamp((float)b,0,255),255};
+    return 0;
+}
+static int lt_set_color_hsv(lua_State *L) {
+    int x=(int)luaL_checkinteger(L,1),y=(int)luaL_checkinteger(L,2),z=(int)luaL_checkinteger(L,3);
+    float h=(float)luaL_checknumber(L,4),s=(float)luaL_checknumber(L,5),v=(float)luaL_checknumber(L,6);
+    if(x>=0&&x<GRID_SIZE&&y>=0&&y<GRID_SIZE&&z>=0&&z<GRID_SIZE)
+        target_colors[x][y][z]=ColorFromHSV(h,s,v);
+    return 0;
+}
+static int lt_set_layer_color_hsv(lua_State *L) {
+    const char *axis=luaL_checkstring(L,1); int idx=(int)luaL_checkinteger(L,2);
+    float h=(float)luaL_checknumber(L,3),s=(float)luaL_checknumber(L,4),v=(float)luaL_checknumber(L,5);
+    if(idx<0||idx>=GRID_SIZE) return 0;
+    Color col=ColorFromHSV(h,s,v);
+    for(int a=0;a<GRID_SIZE;a++) for(int c=0;c<GRID_SIZE;c++) {
+        switch(axis[0]) {
+            case 'x': target_colors[idx][a][c]=col; break;
+            case 'y': target_colors[a][idx][c]=col; break;
+            case 'z': target_colors[a][c][idx]=col; break;
+        }
+    }
+    return 0;
+}
+
+static void load_target(const char *path) {
+    strncpy(target_filename, path, sizeof target_filename - 1);
+    memset(target_grid, 0, sizeof target_grid);
+    // Init target_colors to a neutral dark so unset cubes aren't confusing
+    for(int x=0;x<GRID_SIZE;x++) for(int y=0;y<GRID_SIZE;y++) for(int z=0;z<GRID_SIZE;z++)
+        target_colors[x][y][z]=(Color){60,60,60,255};
+
+    lua_State *Lt = luaL_newstate();
+    luaL_openlibs(Lt);
+    lua_register(Lt, "set_cube",          lt_set_cube);
+    lua_register(Lt, "clear",             lt_clear);
+    lua_register(Lt, "fill",              lt_fill);
+    lua_register(Lt, "set_layer",         lt_set_layer);
+    lua_register(Lt, "set_color",         lt_set_color);
+    lua_register(Lt, "set_color_hsv",     lt_set_color_hsv);
+    lua_register(Lt, "set_layer_color_hsv", lt_set_layer_color_hsv);
+    lua_pushinteger(Lt, GRID_SIZE);
+    lua_setglobal(Lt, "grid_size");
+
+    if (luaL_dofile(Lt, path) != LUA_OK) {
+        fprintf(stderr, "target error: %s\n", lua_tostring(Lt, -1));
+        lua_pop(Lt, 1);
+    }
+    lua_close(Lt);
+}
+
+// ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
 #define ED_MAX_LINES  1000
@@ -423,6 +541,7 @@ static void ed_copy_selection(bool cut) {
 
 static void ed_load(const char *path) {
     strncpy(ed.filename, path, sizeof ed.filename - 1);
+    ed.has_file  = true;   // always editable — new files are created on first Ctrl+R
     ed.nlines    = 0;
     ed.cur_line  = 0;
     ed.cur_col   = 0;
@@ -430,8 +549,8 @@ static void ed_load(const char *path) {
     ed.dirty     = false;
 
     FILE *f = fopen(path, "r");
-    ed.has_file = (f != NULL);
     if (!f) {
+        // New file — start empty
         ed.lines[0][0] = '\0';
         ed.nlines = 1;
         return;
@@ -833,18 +952,25 @@ int main(int argc, char *argv[]) {
     lua_pushinteger(L, GRID_SIZE);
     lua_setglobal(L, "grid_size");
 
-    // Load editor + run startup script
+    // Load editor + run startup script (if the file already exists)
     if (argc > 1) {
         ed_load(argv[1]);
-        if (luaL_dofile(L, argv[1]) != LUA_OK) {
-            fprintf(stderr, "lua error: %s\n", lua_tostring(L, -1));
-            lua_pop(L, 1);
+        FILE *check = fopen(argv[1], "r");
+        if (check) {
+            fclose(check);
+            if (luaL_dofile(L, argv[1]) != LUA_OK) {
+                fprintf(stderr, "lua error: %s\n", lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
         }
     } else {
         ed.has_file = false;
         ed.nlines   = 1;
         ed.lines[0][0] = '\0';
     }
+
+    // Load target shape (argv[2] or default "target1.lua")
+    load_target(argc > 2 ? argv[2] : "target1.lua");
 
     pthread_t tid;
     pthread_create(&tid, NULL, stdin_thread, NULL);
@@ -860,15 +986,18 @@ int main(int argc, char *argv[]) {
     if (!font_loaded) font = GetFontDefault();
     if (font_loaded) SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
 
-    int SW = GetScreenWidth();
-    int SH = GetScreenHeight();
-    int PW = SW / 2;
-    int PH = SH / 2;
+    int SW  = GetScreenWidth();
+    int SH  = GetScreenHeight();
+    int PW  = SW / 2;   // half width (right/left columns)
+    int PH  = SH / 2;   // half height (top/bottom rows)
+    int PW2 = PW / 2;   // quarter width (top+side each get half of left column)
 
-    RenderTexture2D rt_top    = LoadRenderTexture(PW, PH);
-    RenderTexture2D rt_side   = LoadRenderTexture(PW, PH);
-    RenderTexture2D rt_3d     = LoadRenderTexture(PW, PH);
-    RenderTexture2D rt_editor = LoadRenderTexture(PW, PH);
+    // Top-left is split into two equal halves for top and side ortho views
+    RenderTexture2D rt_top    = LoadRenderTexture(PW2, PH);
+    RenderTexture2D rt_side   = LoadRenderTexture(PW2, PH);
+    RenderTexture2D rt_target = LoadRenderTexture(PW,  PH);
+    RenderTexture2D rt_3d     = LoadRenderTexture(PW,  PH);
+    RenderTexture2D rt_editor = LoadRenderTexture(PW,  PH);
 
     float ortho_fovy = (GRID_SIZE - 1) * CUBE_SPACING * 1.25f;
 
@@ -894,25 +1023,39 @@ int main(int argc, char *argv[]) {
     cam.fovy        = 45.0f;
     cam.projection  = CAMERA_PERSPECTIVE;
 
+    // Target panel has its own independent orbital camera
+    float    t_yaw    = -0.8f;
+    float    t_pitch  =  0.4f;
+    float    t_radius = 40.0f;
+    Camera3D t_cam    = {0};
+    t_cam.up          = (Vector3){0, 1, 0};
+    t_cam.fovy        = 45.0f;
+    t_cam.projection  = CAMERA_PERSPECTIVE;
+
     Rectangle panel_3d     = {0,        (float)PH, (float)PW, (float)PH};
+    Rectangle panel_target = {(float)PW, 0,         (float)PW, (float)PH};
     Rectangle panel_editor = {(float)PW, (float)PH, (float)PW, (float)PH};
 
     int visible_lines = (PH - ED_STATUS_H) / ED_LINE_H;
 
-    Color bg_persp  = (Color){20, 20, 20, 255};
-    Color bg_ortho  = (Color){12, 12, 20, 255};
+    Color bg_persp   = (Color){20, 20, 20, 255};
+    Color bg_ortho   = (Color){12, 12, 20, 255};
+    Color bg_target  = (Color){14, 20, 14, 255};
     Color col_border = (Color){55, 55, 70, 255};
     Color col_label  = (Color){140, 140, 180, 255};
 
-    Rectangle src = {0, 0, (float)PW, -(float)PH};  // negative H flips texture Y
+    // Source rects for DrawTextureRec — negative H flips the OpenGL texture Y axis
+    Rectangle src_half = {0, 0, (float)PW2, -(float)PH};
+    Rectangle src_full = {0, 0, (float)PW,  -(float)PH};
 
     while (!WindowShouldClose()) {
-        Vector2 mouse  = GetMousePosition();
-        bool in_3d     = CheckCollisionPointRec(mouse, panel_3d);
-        bool in_editor = CheckCollisionPointRec(mouse, panel_editor);
-        bool ctrl      = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+        Vector2 mouse     = GetMousePosition();
+        bool in_3d        = CheckCollisionPointRec(mouse, panel_3d);
+        bool in_target    = CheckCollisionPointRec(mouse, panel_target);
+        bool in_editor    = CheckCollisionPointRec(mouse, panel_editor);
+        bool ctrl         = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
 
-        // 3D camera controls
+        // 3D view camera controls
         if (in_3d) {
             if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
                 Vector2 d = GetMouseDelta();
@@ -924,6 +1067,20 @@ int main(int argc, char *argv[]) {
             radius -= GetMouseWheelMove() * 1.2f;
             if (radius <  5.0f) radius =  5.0f;
             if (radius > 70.0f) radius = 70.0f;
+        }
+
+        // Target panel camera controls
+        if (in_target) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                Vector2 d = GetMouseDelta();
+                t_yaw   -= d.x * 0.005f;
+                t_pitch -= d.y * 0.005f;
+                if (t_pitch >  1.45f) t_pitch =  1.45f;
+                if (t_pitch < -1.45f) t_pitch = -1.45f;
+            }
+            t_radius -= GetMouseWheelMove() * 1.2f;
+            if (t_radius <  5.0f) t_radius =  5.0f;
+            if (t_radius > 70.0f) t_radius = 70.0f;
         }
 
         // Ctrl+W toggles wireframes (Ctrl avoids conflict with editor 'w')
@@ -959,6 +1116,13 @@ int main(int argc, char *argv[]) {
             radius * cosf(pitch) * cosf(yaw),
         };
         cam.target = (Vector3){0};
+
+        t_cam.position = (Vector3){
+            t_radius * cosf(t_pitch) * sinf(t_yaw),
+            t_radius * sinf(t_pitch),
+            t_radius * cosf(t_pitch) * cosf(t_yaw),
+        };
+        t_cam.target = (Vector3){0};
 
         // Drain Lua command queue
         pthread_mutex_lock(&q_lock);
@@ -1009,6 +1173,24 @@ int main(int argc, char *argv[]) {
             BeginMode3D(side_cam); draw_grid();  EndMode3D();
         EndTextureMode();
 
+        BeginTextureMode(rt_target);
+            ClearBackground(bg_target);
+            BeginMode3D(t_cam);
+                draw_target_grid();
+                draw_axes();
+            EndMode3D();
+            {
+                float off  = (GRID_SIZE - 1) * CUBE_SPACING * 0.5f;
+                float tip  = (GRID_SIZE - 1) * CUBE_SPACING + 1.2f + 0.9f + 0.3f;
+                Vector2 lx = GetWorldToScreenEx((Vector3){-off+tip, -off,     -off    }, t_cam, PW, PH);
+                Vector2 ly = GetWorldToScreenEx((Vector3){-off,     -off+tip, -off    }, t_cam, PW, PH);
+                Vector2 lz = GetWorldToScreenEx((Vector3){-off,     -off,     -off+tip}, t_cam, PW, PH);
+                DrawText("X", (int)lx.x + 4, (int)lx.y - 8, 16, RED);
+                DrawText("Y", (int)ly.x + 4, (int)ly.y - 8, 16, GREEN);
+                DrawText("Z", (int)lz.x + 4, (int)lz.y - 8, 16, BLUE);
+            }
+        EndTextureMode();
+
         BeginTextureMode(rt_3d);
             ClearBackground(bg_persp);
             BeginMode3D(cam);
@@ -1035,23 +1217,32 @@ int main(int argc, char *argv[]) {
         BeginDrawing();
         ClearBackground(BLACK);
 
-        DrawTextureRec(rt_top.texture,    src, (Vector2){0,        0},        WHITE);
-        DrawTextureRec(rt_side.texture,   src, (Vector2){(float)PW, 0},       WHITE);
-        DrawTextureRec(rt_3d.texture,     src, (Vector2){0,        (float)PH}, WHITE);
-        DrawTextureRec(rt_editor.texture, src, (Vector2){(float)PW, (float)PH}, WHITE);
+        // Top-left: top view (left half) + side view (right half)
+        DrawTextureRec(rt_top.texture,    src_half, (Vector2){0,         0}, WHITE);
+        DrawTextureRec(rt_side.texture,   src_half, (Vector2){(float)PW2, 0}, WHITE);
+        // Top-right: target shape
+        DrawTextureRec(rt_target.texture, src_full, (Vector2){(float)PW, 0}, WHITE);
+        // Bottom row
+        DrawTextureRec(rt_3d.texture,     src_full, (Vector2){0,          (float)PH}, WHITE);
+        DrawTextureRec(rt_editor.texture, src_full, (Vector2){(float)PW,  (float)PH}, WHITE);
 
         // Dividers
-        DrawLine(PW, 0,  PW, SH, col_border);
-        DrawLine(0,  PH, SW, PH, col_border);
+        DrawLine(PW2, 0,  PW2, PH, col_border);   // splits top+side in top-left
+        DrawLine(PW,  0,  PW,  SH, col_border);   // main vertical
+        DrawLine(0,   PH, SW,  PH, col_border);   // horizontal
 
         // Panel labels
-        DrawText("TOP",  8,       8,      13, col_label);
-        DrawText("SIDE", PW + 8,  8,      13, col_label);
-        DrawText("3D",   8,       PH + 8, 13, LIGHTGRAY);
+        DrawText("TOP",  8,        8,      12, col_label);
+        DrawText("SIDE", PW2 + 8,  8,      12, col_label);
+        DrawText("3D",   8,        PH + 8, 12, LIGHTGRAY);
+
+        // Target label with filename
+        DrawText("TARGET", PW + 8, 8, 12, (Color){200, 180, 80, 255});
+        DrawText(target_filename, PW + 70, 8, 12, (Color){120, 110, 60, 255});
 
         // Help in 3D panel corner
         DrawText("drag: rotate  scroll: zoom  Ctrl+W: wires",
-                 8, PH + PH - 22, 12, (Color){70, 70, 95, 255});
+                 8, SH - 20, 12, (Color){70, 70, 95, 255});
 
         DrawFPS(SW - 70, 8);
         EndDrawing();
@@ -1059,6 +1250,7 @@ int main(int argc, char *argv[]) {
 
     UnloadRenderTexture(rt_top);
     UnloadRenderTexture(rt_side);
+    UnloadRenderTexture(rt_target);
     UnloadRenderTexture(rt_3d);
     UnloadRenderTexture(rt_editor);
     if (font_loaded) UnloadFont(font);
